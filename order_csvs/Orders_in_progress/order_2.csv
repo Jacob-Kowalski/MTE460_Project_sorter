@@ -1,0 +1,12 @@
+﻿
+name,data
+order_num,2
+circle,3
+pentagon,3
+trapeziod,2
+triangle,1
+plc,3
+circle_collected,3
+pentagon_collected,2
+trapeziod_collected,1
+triangle_collected,0
