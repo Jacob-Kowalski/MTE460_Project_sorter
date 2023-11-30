@@ -1,0 +1,957 @@
+import os
+import csv
+import glob
+import shutil
+import tkinter as tk
+from tkinter import ttk
+import paho.mqtt.client as mqtt
+
+O_I_P_path = "order_csvs\Orders_in_progress"
+
+# makes a dictionary from the csv rows
+#NOTE tested
+def populate_array_from_csv(file_path):
+    """
+    Populates an array with indexes from the first column and values from the second column of a CSV file.
+
+    Parameters:
+    - file_path (str): The path to the CSV file.
+
+    Returns:
+    - dict: A dictionary where keys are indexes (from the first column) and values are corresponding values (from the second column).
+    """
+    result_dict = {}
+
+    with open(file_path, 'r') as csvfile:
+        csv_reader = csv.reader(csvfile)
+
+        for row in csv_reader:
+            # Assuming the CSV has at least two columns
+            if len(row) >= 2:
+                index, value = row[0], row[1]
+                result_dict[index] = value
+
+    return result_dict
+
+#this function used on startup and new order reading.
+#NOTE tested
+def filled_desired_shapes_from_csv_row(row, plc_value):
+
+    wanted_list = [None, None, None, None]
+
+    wanted_list[0] = int(row['circle']) # Circle
+    wanted_list[1] = int(row['pentagon']) # Pentagon
+    wanted_list[2] = int(row['trapeziod']) # Trapezoid
+    wanted_list[3] = int(row['triangle'])  # Triangle
+
+
+    if(plc_value == '3'):
+        Conveyor_complete[0] = 0
+        Conveyor_collected[0] = []
+        conveyor_complete_registered[0] = 1
+        Conveyor[0]= wanted_list
+    elif(plc_value == '4'):
+        Conveyor_complete[1] = 0
+        Conveyor_collected[1] = []
+        conveyor_complete_registered[1] = 1
+        Conveyor[1]= wanted_list
+    elif(plc_value == '8'):
+        Conveyor_complete[2] = 0
+        Conveyor_collected[2] = []   
+        conveyor_complete_registered[2] = 1
+        Conveyor[2]= wanted_list
+    elif(plc_value == '9'):
+        Conveyor_complete[3] = 0    
+        conveyor_complete_registered[3] = 1
+        Conveyor_collected[3] = []
+        Conveyor[3]= wanted_list
+    else:
+        print("invalid plc value for filled_desired_shapes_from_csv_row")
+
+    return
+
+
+#limitiation is that if there were somehow more than one open order, that order would likely get lost
+#used when there is a in progress order, will update the wanted and recieved.
+#NOTE tested
+def read_order_csv(file_path):
+    """
+    Reads a CSV file, appends the data to the given conveyor list,
+    and populates the corresponding collected array based on the PLC row.
+
+    Parameters:
+    - file_path (str): The path to the CSV file.
+    """
+    rows_dic = populate_array_from_csv(file_path)
+
+    collected_list = [None, None, None, None]
+    collected_list[0] = int(rows_dic['circle_collected'])  # Circle
+    collected_list[1] = int(rows_dic['pentagon_collected']) # Pentagon
+    collected_list[2] = int(rows_dic['trapeziod_collected'])  # Trapezoid
+    collected_list[3] = int(rows_dic['triangle_collected'])  # Triangle
+
+    wanted_list = [None, None, None, None]
+    wanted_list[0] = int(rows_dic['circle'])  # Circle
+    wanted_list[1] = int(rows_dic['pentagon']) # Pentagon
+    wanted_list[2] = int(rows_dic['trapeziod'])  # Trapezoid
+    wanted_list[3] = int(rows_dic['triangle'])  # Triangle
+
+    order_complete = (wanted_list == collected_list)
+
+    plc_value = rows_dic['plc']
+
+    # Check if the conveyor_status_obj has a dictionary for the given plc_value
+    if plc_value not in conveyor_status_obj:
+        # If not, create a new dictionary for plc_value
+        conveyor_status_obj[plc_value] = {}
+
+    # Below are what could be swapped out for not hardcoded values
+    conveyor_status_obj[plc_value]["order_number"] = rows_dic['order_num']
+    conveyor_status_obj[plc_value]["complete_status"] = order_complete
+    conveyor_status_obj[plc_value]["file_path"] = file_path
+
+
+    if(plc_value == '3'):
+        Conveyor_collected[0] = collected_list
+        Conveyor[0]= wanted_list
+        Conveyor_complete[0] = order_complete
+    elif(plc_value == '4'):
+        Conveyor_collected[1] = collected_list
+        Conveyor[1]= wanted_list
+        Conveyor_complete[1] = order_complete
+    elif(plc_value == '8'):
+        Conveyor_collected[2] = collected_list
+        Conveyor[2]= wanted_list
+        Conveyor_complete[2] = order_complete
+    elif(plc_value == '9'):
+        Conveyor_collected[3] = collected_list
+        Conveyor[3]= wanted_list
+        Conveyor_complete[3] = order_complete
+    return
+
+#called when the ui first starts, populates the above arrays
+#NOTE tested
+def startup_ui_csv_files():
+    for filename in os.listdir(O_I_P_path):
+        if filename.endswith('.csv'):
+            file_path = os.path.join(O_I_P_path, filename)
+            read_order_csv(file_path)
+
+# Function to read the next order csv, needs to move the file to the next folder,
+#NOTE tested
+def fetch_next_order(plc):
+    """
+    Get the oldest CSV file from a folder based on creation time.
+
+    Parameters:
+    - plc (str): The path to the folder.
+
+    Returns:
+    - str or None: The path to the oldest CSV file, or None if no CSV files are found.
+    """
+    csv_files = glob.glob(os.path.join("order_csvs/Orders", '*.csv'))
+
+    new_orders = len(csv_files)
+
+    if not csv_files:
+        return None
+
+    oldest_csv_file = min(csv_files, key=os.path.getctime)
+
+    rows = populate_array_from_csv(oldest_csv_file)
+
+    if set_csv_row_value(oldest_csv_file, "plc", plc):
+        print(f"Column plc in '{oldest_csv_file}' set to {plc} successfully.")
+        # Don't need to update order complete, as it will be done by the update_order_completion_status() function.
+    else:
+        print(f"Failed to set column plc in '{oldest_csv_file}'.")
+
+    filled_desired_shapes_from_csv_row(rows, rows['plc'])
+
+    new_path = move_csv_file(oldest_csv_file, "order_csvs\Orders_in_progress")
+
+
+
+    update()
+
+    if new_path:
+        # Check if the conveyor_status_obj has a dictionary for the given plc_value
+        if plc not in conveyor_status_obj:
+        # If not, create a new dictionary for plc_value
+            conveyor_status_obj[plc] = {}
+
+        conveyor_status_obj[plc]["filepath"] = new_path
+        print(f"CSV file moved to: {new_path}")
+    else:
+        print("Failed to move the CSV file.")
+
+
+
+# function for when order is completed, and needs to be moved to competed,
+# and status from it taken. Then gets processed. pass in string of conveyor num
+def order_complete(plc):
+    #TODO make the summarizing csv
+    folder_path = conveyor_status_obj[str(plc)]["file_path"]
+    new_path = move_csv_file(folder_path, "order_csvs\Completed_orders")
+
+##TODO call this when the exit button is pressed.
+#update all csvs with their status
+# def update_in_progress_csvs():
+
+
+
+def update_order_completion_status():
+    global completed_orders
+
+    if(Conveyor_collected[0] == Conveyor[0]):
+        if(conveyor_complete_registered[0] == 0):
+            if(len(Conveyor[0]) == 0):
+                Conveyor_complete[0] = 1
+            else:
+                completed_orders = completed_orders + 1
+                Conveyor_complete[0] = 1
+                conveyor_status_obj['3']["complete_status"] = 1
+                order_complete(3)
+        else: 
+            conveyor_complete_registered[0] = 1
+    if(Conveyor_collected[1] == Conveyor[1]):
+        if(conveyor_complete_registered[1] == 0):
+            if(len(Conveyor[1]) == 0):
+                Conveyor_complete[1] = 1
+            else:
+                completed_orders = completed_orders + 1
+                Conveyor_complete[1] = 1
+                conveyor_status_obj['4']["complete_status"] = 1
+                order_complete(4)   
+        else:
+            conveyor_complete_registered[1] = 1
+    if(Conveyor_collected[2] == Conveyor[2]):
+        if(conveyor_complete_registered[2] == 0):
+            if(len(Conveyor[2]) == 0):
+                Conveyor_complete[2] = 1
+            else:
+                completed_orders = completed_orders + 1
+                Conveyor_complete[2] = 1
+                conveyor_status_obj['8']["complete_status"] = 1
+                order_complete(8)
+        else:
+            conveyor_complete_registered[2] = 1
+    if(Conveyor_collected[3] == Conveyor[3]):
+        if(conveyor_complete_registered[3] == 0):
+            if(len(Conveyor[3]) == 0):
+                Conveyor_complete[3] = 1
+            else:
+                completed_orders = completed_orders + 1
+                Conveyor_complete[3] = 1
+                conveyor_status_obj['9']["complete_status"] = 1
+                order_complete(9)
+        else:
+            conveyor_complete_registered[3] = 1
+
+def update_completed_orders_label():
+    completed_orders_label_1.config(text=f"Completed Orders: {completed_orders}")
+
+def update_error_label():
+    error_label.config(text="Error")
+    update_error_status1()
+    update_error_status2()
+    update_error_status3()
+    update_error_status4()
+
+def update_error_status1():
+    if error_status1:
+        error_status_label.config(bg="red")  # Setting background color to red for error
+    else:
+        error_status_label.config(bg="green")  # Setting background color to green for no error
+
+def update_error_status2():
+    if error_status2:
+        error_status2_label.config(bg="orange")  # Setting background color to red for error
+    else:
+        error_status2_label.config(bg="green")  # Setting background color to green for no error
+
+def update_error_status3():
+    global box_stuck_error
+    if box_stuck_error:
+        error_status3_label.config(bg="red")  # Setting background color to red for ball stuck error
+    else:
+        error_status3_label.config(bg="green")  # Setting background color to green when no ball stuck error
+
+def update_error_status4():
+    global count_error
+    if count_error:
+        error_status4_label.config(bg="red")  # Setting background color to red for ball stuck error
+    else:
+        error_status4_label.config(bg="green")  # Setting background color to green when no ball stuck error
+
+def update_conveyor03_status():
+    if Conveyor_complete[0] == 1:
+        completion_light_label_03.config(bg="green")  # Turn LED to green
+        completion_light_label_032.config(bg="green")  # Turn LED to green
+    else:
+        completion_light_label_03.config(bg="red")  # Turn LED to red
+        completion_light_label_032.config(bg="red")  # Turn LED to red
+
+def update_conveyor04_status():
+    if Conveyor_complete[1] == 1:
+        completion_light_label_04.config(bg="green")  # Turn LED to green
+        completion_light_label_042.config(bg="green")  # Turn LED to green
+    else:
+        completion_light_label_04.config(bg="red")  # Turn LED to red
+        completion_light_label_042.config(bg="red")  # Turn LED to red
+
+def update_conveyor08_status():
+    if Conveyor_complete[2] == 1:
+        completion_light_label_08.config(bg="green")  # Turn LED to green
+        completion_light_label_082.config(bg="green")  # Turn LED to green
+    else:
+        completion_light_label_08.config(bg="red")  # Turn LED to red
+        completion_light_label_082.config(bg="red")  # Turn LED to red
+
+def update_conveyor09_status():
+    if Conveyor_complete[3] == 1:
+        completion_light_label_09.config(bg="green")  # Turn LED to green
+        completion_light_label_092.config(bg="green")  # Turn LED to green
+    else:
+        completion_light_label_09.config(bg="red")  # Turn LED to red
+        completion_light_label_092.config(bg="red")  # Turn LED to red
+
+def update_conveyor_labels():
+    conveyor03_status_label.config(text=f"Order: {Conveyor[0]}, Running: {Conveyor_collected[0]}")
+    conveyor03_left_label.config(text=f" Order Left: {Conveyor_left[0]}")
+
+    conveyor04_status_label.config(text=f"Order: {Conveyor[1]}, Running: {Conveyor_collected[1]}")
+    conveyor04_left_label.config(text=f" Order Left: {Conveyor_left[1]}")
+
+    conveyor08_status_label.config(text=f"Order: {Conveyor[2]}, Running: {Conveyor_collected[2]}")
+    conveyor08_left_label.config(text=f" Order Left: {Conveyor_left[2]}")
+
+    conveyor09_status_label.config(text=f"Order: {Conveyor[3]}, Running: {Conveyor_collected[3]}")
+    conveyor09_left_label.config(text=f" Order Left: {Conveyor_left[3]}")
+
+def update():
+    update_order_completion_status()
+    update_error_label()
+    update_conveyor_labels()
+    update_completed_orders_label()
+    update_conveyor03_status()
+    update_conveyor04_status()
+    update_conveyor08_status()
+    update_conveyor09_status()
+
+    # Update GUI elements here
+    completed_orders_label_1.config(text=f"Total Completed orders: {completed_orders}")
+
+    # Update error labels based on error status
+    update_error_status1()
+    update_error_status2()
+    update_error_status3()
+    update_error_status4()
+
+    # Update conveyor labels based on the data
+    conveyor03_status_label.config(text=f"Order: {Conveyor[0]}, Running: {Conveyor_collected[0]}")
+    conveyor03_left_label.config(text=f" Order Left: {Conveyor_left[0]}")
+
+    conveyor04_status_label.config(text=f"Order: {Conveyor[1]}, Running: {Conveyor_collected[1]}")
+    conveyor04_left_label.config(text=f" Order Left: {Conveyor_left[1]}")
+
+    conveyor08_status_label.config(text=f"Order: {Conveyor[2]}, Running: {Conveyor_collected[2]}")
+    conveyor08_left_label.config(text=f" Order Left: {Conveyor_left[2]}")
+
+    conveyor09_status_label.config(text=f"Order: {Conveyor[3]}, Running: {Conveyor_collected[3]}")
+    conveyor09_left_label.config(text=f" Order Left: {Conveyor_left[3]}")
+
+    update_conveyor03_status()
+    update_conveyor04_status()
+    update_conveyor08_status()
+    update_conveyor09_status()
+
+    Conveyor_left[3] = [c - collected for c, collected in zip(Conveyor[3], Conveyor_collected[3])]
+    Conveyor_left[2] = [c - collected for c, collected in zip(Conveyor[2], Conveyor_collected[2])]
+    Conveyor_left[0] = [c - collected for c, collected in zip(Conveyor[0], Conveyor_collected[0])]
+    Conveyor_left[1] = [c - collected for c, collected in zip(Conveyor[1], Conveyor_collected[1])]
+
+    root.after(1000, update)  # Refresh the GUI every 1000 milliseconds (1 second)
+
+# called when start/stop button is checked in GUI
+def publish_belt_speed():
+    # voltage = voltage_entry.get()
+    voltage = 1.5   # should be set in GUI
+    run_status = run_status_var.get()
+
+    for speed_topic in set_topics[0]:
+        client.publish(speed_topic, payload=str(voltage))
+
+    for run_status_topic in set_topics[1]:
+        client.publish(run_status_topic, payload=str(run_status))
+
+""" currently unused!!!!
+def box_stuck_error():
+     run_status_var.set(0)  # chnage the GUI switch state
+     publish_belt_speed()
+     # needs function to chnage the error light state!!!!
+"""
+
+def publish_belt_direction_on_startup():
+    default_direction = 1  # You can set the default direction as needed
+    topics = ["Conveyor03/set_belt_direction", "Conveyor04/set_belt_direction", "Conveyor08/set_belt_direction", "Conveyor09/set_belt_direction"]
+    for topic in topics:
+        client.publish(topic, default_direction)
+
+
+# function to publish que form shape detected from the jetson to the correct plc
+def publish_to_queue(plc_number, divert_condition):
+    """
+    parameters
+    - plc_number: plc number
+    - divert_condition: the value either 0 or 1
+
+    Logic
+    - publishes either a 0 or 1 to the plc.
+    - 0 tells the plc to not divert the nxet box
+    - 1 tells the plc to divert the next box
+    """
+    plc_tag = f"Conveyor0{plc_number}/append_queue"
+    client.publish(plc_tag, payload=str(divert_condition))
+
+def shape_to_number(shape):
+    # Convert the shape to lowercase
+
+    if shape == 'circle':
+        return 0
+    elif shape == 'pentagon':
+        return 1
+    elif shape == 'trapezoid':
+        return 2
+    elif shape == 'triangle':
+        return 3
+
+# function to allocate boxes based on current orders in progress
+def box_allocation(shape):
+    """
+    logic
+    - called when box is sensed by camera
+    - the priority of the orders will be based on distance from input
+    - as follows 3, 4, 8, 9  (probabily changed later to inlcude order age)
+    - very cursed if we can chnage the format of the conveyor lists would make it much nicer
+
+    """
+    shape_number = shape_to_number(shape)
+
+    for index, conveyorIn in enumerate(Conveyor_left):
+        # checks if the index is within the range
+        if 0 <= shape_number < len(conveyorIn):
+            if index == 0:
+                    plc = 3
+            elif index == 1:
+                    plc = 4
+            elif index == 2:
+                    plc = 8
+            elif index == 3:
+                    plc = 9
+            # checks if the vlaue at the index is non zero
+            if conveyorIn[shape_number] != 0:
+                publish_to_queue(plc, 1)
+                Conveyor_queues[index].append(shape_number)
+                break # stops the search when a non zero value is found
+            else:
+                 publish_to_queue(plc, 0)
+
+def on_message(client, userdata, message):
+    topic = message.topic
+    payload = message.payload.decode()
+
+    if topic == get_shape:
+         box_allocation(payload)
+
+    if topic in get_box_diverted:
+        payload = int(payload)
+        if payload == 1:
+            plc_index = get_box_diverted.index(topic)
+            shape_index = Conveyor_queues[plc_index][0]
+            Conveyor_collected[plc_index][shape_index] += 1
+            Conveyor_queues[plc_index].pop(0)
+            client.publish(topic, 0)
+            update()
+
+    # need to inpliment check condition to see if colleceted boxes = order
+
+    # error check functions
+
+#not currently used.
+def read_csv(file_path):
+    """
+    Opens and reads the rows of a CSV file.
+
+    Parameters:
+    - file_path (str): The path to the CSV file.
+
+    Returns:
+    - list of lists: A list where each element is a list representing a row in the CSV file.
+    """
+    rows = []
+
+    with open(file_path, 'r') as csvfile:
+        # Create a CSV reader object
+        csv_reader = csv.reader(csvfile)
+
+        # Read each row and append it to the list
+        for row in csv_reader:
+            rows.append(row)
+
+
+    return rows
+
+#NOTE tested
+def move_csv_file(source_path, destination_folder):
+    """
+    Moves a CSV file from the source path to the specified destination folder.
+
+    Parameters:
+    - source_path (str): The path to the CSV file to be moved.
+    - destination_folder (str): The path to the destination folder.
+
+    Returns:
+    - str or None: The new path of the moved CSV file, or None if the operation failed.
+    """
+    try:
+        # Ensure the destination folder exists
+        if not os.path.exists(destination_folder):
+            os.makedirs(destination_folder)
+
+        # Extract the filename from the source path
+        file_name = os.path.basename(source_path)
+
+        # Create the new path in the destination folder
+        destination_path = os.path.join(destination_folder, file_name)
+
+        # Move the file
+        shutil.move(source_path, destination_path)
+
+        return os.path.normpath(destination_path)
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+
+
+# NOTE tested
+def set_csv_row_value(file_path, search_value, new_value):
+    """
+    Sets the value of the second column in a CSV file to a specified value for a row that matches a condition.
+
+    Parameters:
+    - file_path (str): The path to the CSV file.
+    - search_value: The value to match in the first column.
+    - new_value: The new value to be set in the second column.
+
+    Returns:
+    - bool: True if the modification was successful, False otherwise.
+    """
+    try:
+        # Read the existing content
+        with open(file_path, 'r') as csvfile:
+            csv_reader = csv.reader(csvfile)
+            rows = list(csv_reader)
+
+        # Find the index of the first column
+        first_column_index = 0
+
+        for i, header in enumerate(rows[0]):
+            if header == 'name':  # Replace 'name' with the actual header of the first column
+                first_column_index = i
+                break
+
+        for row in rows[1:]:
+            if row[first_column_index] == str(search_value):
+                # Set the value in the second column to the new value
+                row[1] = str(new_value)  # Assuming the second column is at index 1
+
+        # Write the modified content back to the file
+        with open(file_path, 'w', newline='') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerows(rows)
+
+        return True
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+#Data Cell
+
+
+
+
+shapes = ['Circle','Pentagon','Trapezoid', 'Triangle']
+###########################################################################Values to be updated
+
+# The data flow is as follows, on start-up the factory status file should be opened, and filled with the relevant info from node red, and the orders in progress tab.  When the next-order button is pressed,
+# the next csv file is opened, and the order is read in, need to move the file to in orders_in_progress folder, which has to have extra rows filled (first data row) for which conveyor, and how many is filled in.
+# (need a function for this process). Then this can be continually updated until the exit button is pressed, where it is simply closed, or when it is completed, where the order can be moved to the Completed_orders
+# folder, also with more info on what order number it is (which has to be the first row of the csv)
+
+# Next structure created by jacob, with plc order 3,4,8,9 for intermediate data. conveyor_status_obj[plc_value] has indexes 'filepath' 'order_number' 'complete_status'
+conveyor_status_obj = {}
+
+# Conveyor Queues maps to the plc queues.
+Conveyor_queues = [[], [], [], []]
+
+#Jacob made this to keep the order increment from looping
+conveyor_complete_registered = [0,1,2,3]
+
+# Jacob made this in an attempt to un-hardcode some of the csv stuff.
+c_i_map = {}
+c_i_map['3'] = 0
+c_i_map['4'] = 1
+c_i_map['8'] = 2
+c_i_map['9'] = 3
+
+Conveyor = [None, None, None, None]
+
+Conveyor[0]= []
+Conveyor[1]= []
+Conveyor[2]= []
+Conveyor[3]= []
+
+
+#Need to be attained from plc
+global completed_orders
+completed_orders = 0
+error_status1 = False
+error_status2 = False
+box_stuck_error=False
+count_error=False
+
+new_orders = 0
+
+# Conveyor_complete = [None, None, None, None]
+
+# #Logic to attain order complete status, 1 = complete, 0 = incomplete
+# #initialized to internal values.
+# Conveyor_complete[0] = 0
+# Conveyor_complete[1] = 0
+# Conveyor_complete[2] = 0
+# Conveyor_complete[3] = 0
+
+# Conveyor_collected = [None, None, None, None]
+
+# #Array incremented through sensor/actuation and through the csv file on startup
+# Conveyor_collected[0] = [1,1,0,0]
+# Conveyor_collected[1] = [1,2,1,0]
+# Conveyor_collected[2] = [1,2,0,0]
+# Conveyor_collected[3] = [1,0,0,0]
+
+# #Need to be updated through next csv file
+# # These are just placeholders for testing.
+# Conveyor[0] = [1, 2, 2, 4]
+# Conveyor[1] = [1, 2, 2, 4]
+# Conveyor[2] = [4, 1, 3, 4]
+# Conveyor[3] = [0, 0, 0, 0]
+
+Conveyor_complete = [None, None, None, None]
+
+#Logic to attain order complete status, 1 = complete, 0 = incomplete
+#initialized to internal values.
+Conveyor_complete[0] = 1
+Conveyor_complete[1] = 1
+Conveyor_complete[2] = 1
+Conveyor_complete[3] = 1
+
+Conveyor_collected = [None, None, None, None]
+
+#Array incremented through sensor/actuation and through the csv file on startup
+Conveyor_collected[0] = []
+Conveyor_collected[1] = []
+Conveyor_collected[2] = []
+Conveyor_collected[3] = []
+
+
+#Need to be updated through next csv file
+# These are just placeholders for testing.
+Conveyor[0] = []
+Conveyor[1] = []
+Conveyor[2] = []
+Conveyor[3] = []
+
+##When increment completed orders is called, we need to read new information into the respective conveyor, Add the reading and storing function of CSV files
+# into each of the increment completed order functions
+
+
+#########################################################################
+
+#HMI cell
+
+'''
+#TODO remove this when Duglas' code is in
+def publish_belt_speed():
+    beltsp=1
+'''
+
+
+# Create new arrays to store the difference between conveyor and collected values//No need to be updated
+Conveyor_left = [[] for _ in range(4)]
+Conveyor_left[3] = [c - collected for c, collected in zip(Conveyor[3], Conveyor_collected[3])]
+Conveyor_left[2] = [c - collected for c, collected in zip(Conveyor[2], Conveyor_collected[2])]
+Conveyor_left[0] = [c - collected for c, collected in zip(Conveyor[0], Conveyor_collected[0])]
+Conveyor_left[1] = [c - collected for c, collected in zip(Conveyor[1], Conveyor_collected[1])]
+
+
+# Create an instance of the MQTT client
+client = mqtt.Client()
+
+# Set the on_message attribute of the client to the function on_message
+client.on_message = on_message
+
+# Define the MQTT broker's address and port
+broker_address = "129.97.228.106"
+broker_port = 1883
+
+# Connect to the MQTT broker
+client.connect(broker_address, broker_port)
+
+# set belt directions
+publish_belt_direction_on_startup()
+
+
+
+# define publish (set topics)
+# list of lists with inner list ordered from lowest plc number to highest
+# outer list containing grouped terms (0 - speed, 1 - enable)
+set_topics = [["Conveyor03/set_speed", "Conveyor04/set_speed", "Conveyor08/set_speed", "Conveyor09/set_speed"],
+              ["Conveyor03/set_run_status", "Conveyor04/set_run_status", "Conveyor08/set_run_status", "Conveyor09/set_run_status"]]
+
+# define and subscribe to get topics
+# proximity sensors will have code in node-red which will have a threshol
+get_speed = ["Conveyor03/get_belt_speed", "Conveyor04/get_belt_speed", "Conveyor08/get_belt_speed", "Conveyor09/get_belt_speed"]
+get_box_diverted = ["Conveyor03/box_diverted", "Conveyor04/box_diverted", "Conveyor08/box_diverted", "Conveyor09/box_diverted"]
+
+get_shape = "Conveyor03/get_shape_detected"
+
+client.subscribe(get_shape)
+
+for topic in get_speed + get_box_diverted:
+    client.subscribe(topic)
+
+for topic in get_box_diverted:
+    client.publish(topic, 0)
+
+
+# Start the MQTT client's main loop to wait for updates on the subscribed topics
+client.loop_start()
+
+root = tk.Tk()
+root.title("Conveyor Orders")
+
+tab_control = ttk.Notebook(root)
+
+# Tab 1 - Home
+tab1 = ttk.Frame(tab_control)
+tab_control.add(tab1, text='Home')
+tab_control.pack(expand=1, fill="both")
+
+tab2 = ttk.Frame(tab_control)
+tab_control.add(tab2, text='Orders')
+tab_control.pack(expand=1, fill="both")
+
+# Creating a frame within the Home tab
+home_frame = ttk.Frame(tab1)
+home_frame.pack(expand=1, fill="both")
+
+home_frame2 = ttk.Frame(tab2)
+home_frame2.pack(expand=1, fill="both")
+
+
+# Label to display completed orders
+completed_orders_label_1 = tk.Label(home_frame, text=f"Total Completed orders: {completed_orders}", font=("Arial", 14))
+completed_orders_label_1.grid(row=9, column=0, pady=90)  # Adjust row and pady for position
+
+
+# Error labels
+error_label = tk.Label(home_frame, text="Error", font=("Arial", 14))
+error_label.grid(row=1, column=0)  # Adjust row and pady for position
+
+error_label1 = tk.Label(home_frame, text="E-STOP", font=("Arial", 14))
+error_label1.grid(row=2, column=0)  # Adjust row and pady for position
+
+error_label2 = tk.Label(home_frame, text="Speed Error", font=("Arial", 14))
+error_label2.grid(row=3, column=0)  # Adjust row and pady for position
+
+error_label3 = tk.Label(home_frame, text="Box Stuck Error", font=("Arial", 14))
+error_label3.grid(row=4, column=0)  # Adjust row and column for position
+
+error_label4 = tk.Label(home_frame, text="Count Error", font=("Arial", 14))
+error_label4.grid(row=5, column=0)  # Adjust row and column for position
+
+# Label for representing error status with colored lights
+error_status_label = tk.Label(home_frame, width=1, height=1, bg="red")  # Initial status is error (red)
+error_status_label.grid(row=2, column=1, padx=5)  # Adjust row and padx for position
+
+error_status2_label = tk.Label(home_frame, width=1, height=1, bg="red")  # Initial status is error (red)
+error_status2_label.grid(row=3, column=1, padx=5)  # Adjust row and padx for position
+
+error_status3_label = tk.Label(home_frame, width=1, height=1, bg="green")  # Initial status is no error (green)
+error_status3_label.grid(row=4, column=1, padx=5)  # Adjust row and column for position
+
+error_status4_label = tk.Label(home_frame, width=1, height=1, bg="green")  # Initial status is no error (green)
+error_status4_label.grid(row=5, column=1, padx=5)  # Adjust row and column for position
+
+# Label for Running Status of Conveyor03
+running_status_label_03 = tk.Label(home_frame, text="Conveyor03 Order Complete", font=("Arial", 14))
+running_status_label_03.grid(row=1, column=2, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor03
+completion_light_label_03 = tk.Label(home_frame, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_03.grid(row=1, column=3, padx=5)  # Adjust row and padx for position
+
+shapes_label = tk.Label(home_frame, text=f"Shapes order:{shapes}", font=("Arial", 12))
+shapes_label.grid(row=0, column=2, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for displaying Conveyor[0]array completion status
+conveyor03_status_label = tk.Label(home_frame, text=f"Conveyor03:{Conveyor[0]}", font=("Arial", 12))
+conveyor03_status_label.grid(row=2, column=2, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for Running Status of Conveyor04
+running_status_label_04 = tk.Label(home_frame, text="Conveyor04 Order Complete", font=("Arial", 14))
+running_status_label_04.grid(row=3, column=2, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor04
+completion_light_label_04 = tk.Label(home_frame, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_04.grid(row=3, column=3, padx=5)  # Adjust row and padx for position
+
+# Label for displaying Conveyor[1]array completion status
+conveyor04_status_label = tk.Label(home_frame, text=f"Conveyor04: {Conveyor[1]}", font=("Arial", 12))
+conveyor04_status_label.grid(row=4, column=2, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for Running Status of Conveyor08
+running_status_label_08 = tk.Label(home_frame, text="Conveyor08 Order Complete", font=("Arial", 14))
+running_status_label_08.grid(row=5, column=2, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor08
+completion_light_label_08 = tk.Label(home_frame, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_08.grid(row=5, column=3, padx=5)  # Adjust row and padx for position
+
+# Label for displaying Conveyor[2]array completion status
+conveyor08_status_label = tk.Label(home_frame, text=f"Conveyor08: {Conveyor[2]}", font=("Arial", 12))
+conveyor08_status_label.grid(row=6, column=2, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for Running Status of Conveyor09
+running_status_label_09 = tk.Label(home_frame, text="Conveyor09 Order Complete", font=("Arial", 14))
+running_status_label_09.grid(row=7, column=2, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor09
+completion_light_label_09 = tk.Label(home_frame, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_09.grid(row=7, column=3, padx=5)  # Adjust row and padx for position
+
+# Label for displaying Conveyor[3]array completion status
+conveyor09_status_label = tk.Label(home_frame, text=f"Conveyor09: {Conveyor[3]}", font=("Arial", 12))
+conveyor09_status_label.grid(row=8, column=2, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+########Orders tab##################################################################################################
+shapes_label = tk.Label(home_frame2, text=f"Shapes order:{shapes}", font=("Arial", 12))
+shapes_label.grid(row=1, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label to display completed orders
+completed_orders_label_1 = tk.Label(home_frame2, text=f"Total Completed orders: {completed_orders}", font=("Arial", 14))
+completed_orders_label_1.grid(row=0, column=0, pady=0)  # Adjust row and pady for position
+
+# Label for Running Status of Conveyor03
+running_status_label_03 = tk.Label(home_frame2, text="Conveyor03 Order Complete:", font=("Arial", 14))
+running_status_label_03.grid(row=2, column=0, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor03
+completion_light_label_032 = tk.Label(home_frame2, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_032.grid(row=2, column=1, padx=5)  # Adjust row and padx for position
+
+
+# Label for displaying Conveyor[0]array completion status
+conveyor03_status_label = tk.Label(home_frame2,
+                                     text=f"Order: {Conveyor[0]}, Completed: {Conveyor_collected[0]}",
+                                     font=("Arial", 12))
+conveyor03_status_label.grid(row=3, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+conveyor03_left_label = tk.Label(home_frame2,
+                                     text=f" Order Left: {Conveyor_left[0]}",
+                                     font=("Arial", 12))
+conveyor03_left_label.grid(row=4, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+
+# Label for Running Status of Conveyor04
+running_status_label_04 = tk.Label(home_frame2, text="Conveyor04 Order Complete", font=("Arial", 14))
+running_status_label_04.grid(row=5, column=0, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor04
+completion_light_label_042 = tk.Label(home_frame2, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_042.grid(row=5, column=1, padx=5)  # Adjust row and padx for position
+
+# Label for displaying Conveyor[1]array completion status
+conveyor04_status_label = tk.Label(home_frame2, text=f"Conveyor04: {Conveyor[1]}, Completed: {Conveyor_collected[1]}", font=("Arial", 12))
+conveyor04_status_label.grid(row=6, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+conveyor04_left_label = tk.Label(home_frame2,
+                                     text=f" Order Left: {Conveyor_left[1]}",
+                                     font=("Arial", 12))
+conveyor04_left_label.grid(row=7, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+
+# Label for Running Status of Conveyor08
+running_status_label_08 = tk.Label(home_frame2, text="Conveyor08 Order Complete", font=("Arial", 14))
+running_status_label_08.grid(row=8, column=0, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor08
+completion_light_label_082 = tk.Label(home_frame2, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_082.grid(row=8, column=1, padx=5)  # Adjust row and padx for position
+
+# Label for displaying Conveyor[2]array completion status
+conveyor08_status_label = tk.Label(home_frame2, text=f"Conveyor08: {Conveyor[2]}, Completed: {Conveyor_collected[2]}", font=("Arial", 12))
+conveyor08_status_label.grid(row=9, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+conveyor08_left_label = tk.Label(home_frame2,
+                                     text=f" Order Left: {Conveyor_left[2]}",
+                                     font=("Arial", 12))
+conveyor08_left_label.grid(row=10, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+
+# Label for Running Status of Conveyor09
+running_status_label_09 = tk.Label(home_frame2, text="Conveyor09 Order Complete", font=("Arial", 14))
+running_status_label_09.grid(row=11, column=0, pady=10, padx=20)  # Adjust row, column, pady, and padx for position
+
+# Label for completion light indicator for Conveyor09
+completion_light_label_092 = tk.Label(home_frame2, width=1, height=1)  # Initial status is completion (green/red)
+completion_light_label_092.grid(row=11, column=1, padx=5)  # Adjust row and padx for position
+
+# Label for displaying Conveyor[3]array completion status
+conveyor09_status_label = tk.Label(home_frame2, text=f"Conveyor09: {Conveyor[3]}, Completed: {Conveyor_collected[3]}", font=("Arial", 12))
+conveyor09_status_label.grid(row=12, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+conveyor09_left_label = tk.Label(home_frame2,
+                                     text=f" Order Left: {Conveyor_left[3]}",
+                                     font=("Arial", 12))
+conveyor09_left_label.grid(row=13, column=0, columnspan=2, pady=5, padx=20)  # Adjust row, column, pady, and padx for position
+
+update_conveyor03_button = tk.Button(home_frame2, text="Next Order", command=lambda:fetch_next_order('3'))
+update_conveyor03_button.grid(row=2, column=2)
+
+update_conveyor04_button = tk.Button(home_frame2, text="Next Order", command=lambda:fetch_next_order('4'))
+update_conveyor04_button.grid(row=5, column=2)
+
+update_conveyor08_button = tk.Button(home_frame2, text="Next Order", command= lambda: fetch_next_order('8'))
+update_conveyor08_button.grid(row=8, column=2)
+
+update_conveyor09_button = tk.Button(home_frame2, text="Next Order", command=lambda: fetch_next_order('9'))
+update_conveyor09_button.grid(row=11, column=2)
+
+run_status_label2 = ttk.Label(home_frame2, text="Conveyor Run Status:", style='Custom.TLabel',font=("Arial", 14) )
+run_status_label2.grid(row=0, column=1)
+run_status_var = tk.IntVar()
+run_status_switch2 = ttk.Checkbutton(home_frame2, variable=run_status_var, command=publish_belt_speed, style='Custom.TCheckbutton')
+run_status_switch2.grid(row=0, column=2, padx=10, pady=10, sticky='w')
+
+
+
+
+# Function calls to update various conveyor completion statuses
+update()
+# TODO VERIFY, jacob added this here, should run once
+startup_ui_csv_files()
+
+root.mainloop()
